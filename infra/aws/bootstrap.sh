@@ -18,7 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # aws.exe on Windows can end lines with \r, which would corrupt every variable we capture.
 aws() { command aws "$@" | tr -d '\r'; }
-log() { echo "==> $*"; }
+log() { echo "==> $*" >&2; }      # to stderr: stdout of helper functions is captured by $(...)
 
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 log "account $ACCOUNT, region $REGION"
@@ -145,9 +145,9 @@ ensure_instance() {   # name, security-group, user-data text, tags (e.g. "{Key=R
   echo "$id"
 }
 
-SERVICE_ID="$(ensure_instance v2x-service "$SG_SERVICE" "$(cat "$HERE/userdata-service.sh")" '{Key=Role,Value=v2x-service}' | tail -n 1)"
-RSU1_UD="$(sed 's/__RSU_ID__/rsu-1/g' "$HERE/userdata-rsu.sh")"
-RSU2_UD="$(sed 's/__RSU_ID__/rsu-2/g' "$HERE/userdata-rsu.sh")"
+SERVICE_ID="$(ensure_instance v2x-service "$SG_SERVICE" "$(tr -d '\r' < "$HERE/userdata-service.sh")" '{Key=Role,Value=v2x-service}' | tail -n 1)"
+RSU1_UD="$(tr -d '\r' < "$HERE/userdata-rsu.sh" | sed 's/__RSU_ID__/rsu-1/g')"
+RSU2_UD="$(tr -d '\r' < "$HERE/userdata-rsu.sh" | sed 's/__RSU_ID__/rsu-2/g')"
 RSU1_ID="$(ensure_instance rsu-1 "$SG_RSU" "$RSU1_UD" '{Key=Role,Value=rsu},{Key=RsuId,Value=rsu-1}' | tail -n 1)"
 RSU2_ID="$(ensure_instance rsu-2 "$SG_RSU" "$RSU2_UD" '{Key=Role,Value=rsu},{Key=RsuId,Value=rsu-2}' | tail -n 1)"
 

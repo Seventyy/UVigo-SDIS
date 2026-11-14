@@ -7,15 +7,23 @@ from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
 from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+from alerts import build_alert, publish_alert
 
 REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 sqs = boto3.client("sqs", region_name=REGION)
 ddb = boto3.client("dynamodb", region_name=REGION)
+sns = boto3.client("sns", region_name=REGION)
 QUEUE_URL = sqs.get_queue_url(QueueName="v2x-events")["QueueUrl"]
 SCHEMA = json.load(open("schema/v2x-event.schema.json"))
 ser, des = TypeSerializer(), TypeDeserializer()
-stats = {"received": 0, "stored": 0, "duplicate": 0, "invalid": 0, "alerts": 0}
-state = {"last_poll": time.time()}
+stats = {"received": 0, "stored": 0, "duplicate": 0, "invalid": 0, "alerts": 0, "sns_published": 0, "sns_errors": 0}
+state = {"last_poll": time.time(), "topic_arn": None}
+
+def topic_arn():
+    """ARN of the SNS topic v2x-alerts (create_topic returns the existing topic when it already exists)."""
+    if state["topic_arn"] is None:
+        state["topic_arn"] = os.getenv("ALERTS_TOPIC_ARN") or sns.create_topic(Name="v2x-alerts")["TopicArn"]
+    return state["topic_arn"]
 
 def item(d): return {k: ser.serialize(v) for k, v in d.items()}
 def now_iso(): return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -45,12 +53,8 @@ def process(ev):
             return
         raise
     stats["stored"] += 1
-    if ev["event_type"] == "brake" and p["decel_mps2"] >= 4:
-        alert = {"alert_id": f"brake:{ev['event_id']}", "alert_type": "sudden_braking", "origin": "cloud",
-                 "severity": 2 if p["decel_mps2"] >= 7 else 1, "created_time": now_iso(),
-                 "location": {"segment_id": seg, "rsu_id": ev["location"]["rsu_id"]},
-                 "cause_event_ids": [ev["event_id"]], "schema_version": "1.0",
-                 "message": f"Sudden braking by {ev['source_id']} on {seg}"}
+    alert = build_alert(ev, now_iso())
+    if alert:
         try:
             ddb.put_item(TableName="v2x-alerts", Item=item(alert),
                          ConditionExpression="attribute_not_exists(alert_id)")
@@ -58,6 +62,13 @@ def process(ev):
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+            return
+        try:
+            ok = publish_alert(sns, topic_arn(), alert)
+        except Exception as e:   # e.g. the topic ARN could not be resolved
+            print(json.dumps({"sns_error": str(e), "alert_id": alert["alert_id"]}), flush=True)
+            ok = False
+        stats["sns_published" if ok else "sns_errors"] += 1
 
 def consume():
     while True:

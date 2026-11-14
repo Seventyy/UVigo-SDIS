@@ -31,7 +31,8 @@ Vehicles follow the Intelligent Driver Model (IDM) on a 12-segment ring road spl
 | `--delay-ms A:B` | Extra delay per event, uniform between A and B ms |
 | `--reorder-window N` | Shuffle every N events |
 | `--burst S:E:F` | Multiply rates by F between second S and E |
-| `--transport` | `sqs`, `stdout` (`mqtt` arrives in Deliverable 2) |
+| `--transport` | `sqs`, `mqtt`, `stdout` |
+| `--rsu1`, `--rsu2` | MQTT broker of each RSU as `host[:port]` (default `localhost:1883`), used with `--transport mqtt` |
 
 ## Output
 

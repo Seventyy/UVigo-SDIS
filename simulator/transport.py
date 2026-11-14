@@ -1,4 +1,4 @@
-"""Where generated events go: SQS (D1), stdout (dry runs), a list (tests). MQTT arrives in D2."""
+"""Where generated events go: SQS (D1), MQTT to the RSUs (D2), stdout (dry runs), a list (tests)."""
 import json
 import sys
 import time
@@ -59,5 +59,82 @@ class SqsTransport:
 
 
 class MqttTransport:
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("MQTT transport is part of Deliverable 2")
+    """Publishes vehicle events to their RSU's MQTT broker and listens for the alerts the RSU sends back.
+
+    One connection per RSU. Routing uses the event's location.rsu_id:
+      v2x/<rsu_id>/up      simulator -> RSU   (QoS 1)
+      v2x/<rsu_id>/alerts  RSU -> vehicles    (the simulator subscribes and logs them)
+    Events whose source_type is "rsu" are skipped: the RSU computes its own density.
+
+    rsus: {"rsu-1": ("host", 1883), "rsu-2": ("host", 1883)}
+    client_factory: function(client_id) -> MQTT client; tests pass a fake, the default builds a paho 2.x client.
+    """
+
+    def __init__(self, rsus, client_factory=None, qos=1, linger_s=1.0):
+        self.rsus = dict(rsus)
+        self.qos = qos
+        self.linger_s = linger_s       # time kept after the last event to receive late alerts
+        self.clients = {}
+        self.pending = []              # publish handles not yet acknowledged by the broker
+        self.alerts = []               # every alert received, with the wall-clock reception time
+        self.stats = {"published": 0, "skipped_rsu_events": 0, "unrouted": 0,
+                      "alerts_received": 0, "bad_alerts": 0}
+        factory = client_factory or self._paho_client
+        for rsu_id, (host, port) in self.rsus.items():
+            client = factory(f"sim-{rsu_id}")
+            client.on_connect = self._make_on_connect(rsu_id)
+            client.on_message = self._on_message
+            client.connect(host, port, 60)
+            client.loop_start()
+            self.clients[rsu_id] = client
+
+    @staticmethod
+    def _paho_client(client_id):
+        import paho.mqtt.client as mqtt  # imported here so tests and dry runs do not need paho
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)  # paho 2.x needs the API version
+        client.max_inflight_messages_set(1000)
+        return client
+
+    def _make_on_connect(self, rsu_id):
+        def on_connect(client, userdata, flags, reason_code, properties=None):
+            # subscribing here (not once) also restores the subscription after an automatic reconnect
+            client.subscribe(f"v2x/{rsu_id}/alerts", qos=self.qos)
+        return on_connect
+
+    def _on_message(self, client, userdata, msg):
+        try:
+            alert = json.loads(msg.payload)
+        except ValueError:
+            self.stats["bad_alerts"] += 1
+            return
+        self.stats["alerts_received"] += 1
+        record = {"received_wall_time": time.time(), "topic": msg.topic, "alert": alert}
+        self.alerts.append(record)
+        sys.stderr.write(f"[alert] {msg.topic} {alert.get('origin')} {alert.get('alert_type')} "
+                         f"{alert.get('message')}\n")
+
+    def send(self, events):
+        for ev in events:
+            if ev.get("source_type") == "rsu":
+                self.stats["skipped_rsu_events"] += 1
+                continue
+            rsu_id = ev["location"]["rsu_id"]
+            client = self.clients.get(rsu_id)
+            if client is None:
+                self.stats["unrouted"] += 1
+                continue
+            info = client.publish(f"v2x/{rsu_id}/up", json.dumps(ev, separators=(",", ":")), qos=self.qos)
+            self.stats["published"] += 1
+            self.pending.append(info)
+        self.pending = [i for i in self.pending if not i.is_published()]   # keep only unacknowledged ones
+
+    def close(self):
+        for info in self.pending:
+            try:
+                info.wait_for_publish(timeout=5)
+            except (ValueError, RuntimeError):
+                pass                   # not connected or queue full: the event stays unacknowledged
+        time.sleep(self.linger_s)
+        for client in self.clients.values():
+            client.loop_stop()
+            client.disconnect()

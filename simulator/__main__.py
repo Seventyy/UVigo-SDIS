@@ -22,6 +22,11 @@ def _burst(text):
     return start, end, factor
 
 
+def _hostport(text):
+    host, _, port = text.partition(":")
+    return host, int(port or 1883)
+
+
 def _git_sha():
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True).strip()
@@ -37,6 +42,8 @@ def main():
     p.add_argument("--duration", type=float, help="override the scenario's duration (s)")
     p.add_argument("--transport", choices=["sqs", "stdout", "mqtt"], default="stdout")
     p.add_argument("--queue", default="v2x-events")
+    p.add_argument("--rsu1", type=_hostport, default=("localhost", 1883), help="MQTT broker of rsu-1, host[:port]")
+    p.add_argument("--rsu2", type=_hostport, default=("localhost", 1883), help="MQTT broker of rsu-2, host[:port]")
     p.add_argument("--region", default="us-east-1")
     p.add_argument("--rate-scale", type=float, default=1.0, help="multiply every publish rate")
     p.add_argument("--time-scale", type=float, default=1.0, help=">1 runs model time faster than wall time")
@@ -67,7 +74,7 @@ def main():
     if a.transport == "sqs":
         transport = SqsTransport(a.queue, a.region)
     elif a.transport == "mqtt":
-        transport = MqttTransport()
+        transport = MqttTransport({"rsu-1": a.rsu1, "rsu-2": a.rsu2})
     else:
         transport = StdoutTransport()
 
@@ -81,6 +88,11 @@ def main():
     fl.close()
     if isinstance(transport, SqsTransport):
         stats["sqs"] = transport.stats
+    if isinstance(transport, MqttTransport):
+        stats["mqtt"] = transport.stats
+        with open(os.path.join(run_dir, "alerts_received.jsonl"), "w", encoding="utf-8") as f:
+            for rec in transport.alerts:
+                f.write(json.dumps(rec) + "\n")
     stats["wall_s"] = round(time.time() - t0, 1)
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)

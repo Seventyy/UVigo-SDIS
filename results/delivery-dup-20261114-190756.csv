@@ -1,0 +1,4 @@
+condition,run_id,generated,dropped_injected,duplicated_injected,sent,accepted_stored,lost,duplicate_processed,consistent,p50_ms,p95_ms,max_queue_depth,drain_s,dead_letter,alerts
+baseline,20261114-190115-accident-s79054,2541,0,0,2541,2541,0,0,True,9708,20790,463,28.2,0,1
+dup=0.1,20261114-190310-accident-s19136,2536,0,253,2789,2536,0,0,True,2248,9556,206,23.9,0,0
+dup=0.3,20261114-190524-accident-s18165,2541,0,763,3304,2541,0,0,True,1638,8395,149,19.9,0,2

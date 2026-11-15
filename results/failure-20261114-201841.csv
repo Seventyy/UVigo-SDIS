@@ -1,0 +1,2 @@
+condition,run_id,generated,downtime_s,max_queue_depth,unprocessed_at_restart,recovery_s,service_received_since_restart,service_duplicate_since_restart,accepted_stored,lost,duplicate_processed,consistent,p95_ms,dead_letter
+service down 60s,20261114-201545-accident-s28908,2542,60,2145,1760,88.4,2172,1,2542,0,0,True,84977,0
